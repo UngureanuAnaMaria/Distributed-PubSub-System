@@ -1,0 +1,12 @@
+{
+  "broker_ports": [8001, 8002, 8003],
+  "publisher_interval": 1.5,
+  "subscription_weights": {
+    "company": 0.90,
+    "value": 0.80,
+    "variation": 0.50,
+    "drop": 0.60,
+    "date": 0.40
+  },
+  "default_equality_weight": 0.70
+}
