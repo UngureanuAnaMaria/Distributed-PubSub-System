@@ -4,6 +4,9 @@ import sys
 import json
 from typing import List, Dict
 
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from models.matching_engine import MatchingEngine
 from models.publication import Publication
 from models.subscription import Subscription
@@ -23,44 +26,72 @@ class BrokerNode:
         self.port = port
         self.logger = logging.getLogger(f"Broker-{broker_id}")
 
-        # baza locala din RAM a brokerului, writer -> conex
+        # Baza locala din RAM a brokerului: writer -> lista de subscriptii
         self.subscriptions: Dict[asyncio.StreamWriter, List[Subscription]] = {}
 
     async def start(self) -> None:
-        # de fiecare data cand un client se conecteaza porneste handle_client()
         server = await asyncio.start_server(self.handle_client, 'localhost', self.port)
         self.logger.info(f"Broker node {self.broker_id} is ONLINE and listening on port {self.port}...")
         async with server:
             await server.serve_forever()
 
+    async def forward_to_peers(self, fields: dict, timestamp: float) -> None:
+        """Redirecționează publicația primită de la publisher către ceilalți brokeri din rețea."""
+        forward_message = {
+            "type": "PUBLISH",
+            "fields": fields,
+            "timestamp": timestamp,
+            "forwarded": True
+        }
+        packet = json.dumps(forward_message) + "\n"
+
+        for peer_port in BROKER_PORTS:
+            if peer_port == self.port:
+                continue
+            try:
+                # Conectare dinamică, trimitere pachet și închidere conexiune (similara cu publisher-ul)
+                _, writer = await asyncio.open_connection('localhost', peer_port)
+                writer.write(packet.encode('utf-8'))
+                await writer.drain()
+                writer.close()
+                await writer.wait_closed()
+                self.logger.info(f"-> [FORWARD] Publication routed to peer broker on port [{peer_port}]")
+            except Exception as e:
+                self.logger.warning(f"Could not forward to peer broker on port [{peer_port}]: {e}")
+
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        peer_name = writer.get_extra_info('peername')  # extract client IP & port
+        peer_name = writer.get_extra_info('peername')
         self.logger.info(f"New connection established from: {peer_name}")
 
         while True:
             try:
-                data = await reader.read(4096)  # chunk size = 4KB
+                # CITIM LINIE CU LINIE IN LOC DE BUCATI DE 4096 BYTES
+                data = await reader.readline()
                 if not data:
-                    self.logger.error("Connection with Client was lost.")
-                    break  # Client disconnected
+                    self.logger.info(f"Connection with client {peer_name} was closed.")
+                    break
 
-                packets = data.decode('utf-8').strip().split('\n')
-                for packet in packets:
-                    if not packet:
-                        continue
+                packet = data.decode('utf-8').strip()
+                if not packet:
+                    continue
 
-                    message = json.loads(packet)
+                message = json.loads(packet)
 
-                    if message.get("type") == "SUBSCRIBE":
+                if message.get("type") == "SUBSCRIBE":
                         subscription = Subscription(message["subscriber_id"], message["filters"])
                         if writer not in self.subscriptions:
                             self.subscriptions[writer] = []
                         self.subscriptions[writer].append(subscription)
                         self.logger.info(f"Subscription STORED for subscriber {message['subscriber_id']}")
-                    elif message.get("type") == "PUBLISH":
+                    
+                elif message.get("type") == "PUBLISH":
                         publication = Publication(message["fields"], message["timestamp"])
-                        self.logger.info(f"Publication received. Payload: {json.dumps(publication.fields)}")
+                        is_forwarded = message.get("forwarded", False)
+                        
+                        log_prefix = "[FORWARDED] " if is_forwarded else ""
+                        self.logger.info(f"{log_prefix}Publication received. Payload: {json.dumps(publication.fields)}")
 
+                        # 1. Matching local și notificare pentru subscriberii conectați direct la acest broker
                         for client_writer, subscriptions in list(self.subscriptions.items()):
                             for subscription in subscriptions:
                                 if MatchingEngine.is_match(publication, subscription):
@@ -78,6 +109,11 @@ class BrokerNode:
                                         if client_writer in self.subscriptions:
                                             del self.subscriptions[client_writer]
 
+                        # 2. Dacă publicația vine direct de la un Publisher (nu este deja forward-ată), o trimitem peer-ilor
+                        if not is_forwarded:
+                            # Folosim asyncio.create_task pentru a nu bloca fluxul principal al clientului curent
+                            asyncio.create_task(self.forward_to_peers(publication.fields, publication.timestamp))
+
             except Exception as e:
                 self.logger.error(f"Error handling traffic for {peer_name}: {e}")
                 break
@@ -85,7 +121,10 @@ class BrokerNode:
         if writer in self.subscriptions:
             del self.subscriptions[writer]
         writer.close()
-        await writer.wait_closed()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
         self.logger.info(f"Connection closed for: {peer_name}")
 
 

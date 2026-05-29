@@ -3,28 +3,38 @@ import json
 import sys
 import random
 import asyncio
+import time
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from models.load_config import load_config
 from models.publication import Publication
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s [%(levelname)s] (%(name)s): %(message)s',
-                    handlers=[logging.StreamHandler(sys.stdout)])  # handler -> implicit este stderr, nu stdout
+                    handlers=[logging.StreamHandler(sys.stdout)])
 logger = logging.getLogger("PUBLISHER NODE")
 
 config = load_config()
 BROKER_PORTS = config["broker_ports"]
 PUBLISHER_INTERVAL = config["publisher_interval"]
 
+# --- EVALUATION CONFIG ---
+EVALUATION_TIME_LIMIT = 180.0  # 3 minute
 
-async def start_publisher(publisher_id: str) -> None:
-    logger = logging.getLogger(f"Publisher-{publisher_id}")
-    logger.info(f"Node {publisher_id} started and is generating publication stream...")
 
-    while True:
+async def start_publisher(publisher_id: str, stats: dict) -> None:
+    logger_node = logging.getLogger(f"Publisher-{publisher_id}")
+    logger_node.info(f"Node {publisher_id} started for a {EVALUATION_TIME_LIMIT}s test...")
+
+    start_time = time.time()
+
+    while time.time() - start_time < EVALUATION_TIME_LIMIT:
         chosen_port = random.choice(BROKER_PORTS)
         try:
             connect_task = asyncio.open_connection('localhost', chosen_port)
-            _, writer = await asyncio.wait_for(connect_task, timeout=3.0)  # 3s limit to connect
+            _, writer = await asyncio.wait_for(connect_task, timeout=3.0)
 
             publication = Publication()
             packet = json.dumps({
@@ -33,45 +43,39 @@ async def start_publisher(publisher_id: str) -> None:
                 "timestamp": publication.timestamp
             }) + "\n"
 
-            # bytes - only format accepted by the network
             writer.write(packet.encode('utf-8'))
-            await writer.drain()  # send data and wait for buffer to become empty
+            await writer.drain()
 
             writer.close()
             await writer.wait_closed()
-            logger.info(f"Publication sent successfully to Broker {chosen_port}| "
-                        f"Payload: {json.dumps(publication.fields)}")
+            
+            stats['total_emitted'] += 1
+            logger_node.info(f"[EMITTED #{stats['total_emitted']}] Sent to Broker {chosen_port}")
 
-        except ConnectionRefusedError:
-            # brokerul este oprit
-            logger.error(f"Broker [{chosen_port}] is completely offline (Connection Refused). Retrying...")
-
-        except asyncio.TimeoutError:
-            # brokerul e pornit, dar e blocat/suprasolicitat si nu raspunde in 3 secunde
-            logger.warning(f"Broker [{chosen_port}] connection timed out. Server might be overloaded. Retrying...")
-
-        except (ConnectionResetError, OSError) as network_error:
-            # pica rețeaua sau apar erori de sistem de operare
-            logger.error(f"Network transport error with Broker [{chosen_port}]: {network_error}. Retrying...")
-
-        except Exception as unknown_error:
-            # Plasa de siguranta pentru orice alta eroare neprevazuta (ex: eroare de parsare JSON)
-            logger.critical(f"Unexpected critical error: {unknown_error}")
+        except Exception as e:
+            logger_node.warning(f"Failed to connect/send to Broker [{chosen_port}]: {e}")
 
         await asyncio.sleep(PUBLISHER_INTERVAL)
+        
+    logger_node.info(f"Node {publisher_id} has finished the evaluation run.")
 
 
 if __name__ == "__main__":
-    async def main() -> None:
-        logger.info("Launching publishers concurrently into the network...")
-        # Paralelizare -> lansate simultan, alternând utilizarea procesorului în momentele de await
-        await asyncio.gather(
-            start_publisher("1"),
-            start_publisher("2")
-        )
+    global_stats = {'total_emitted': 0}
 
+    async def main() -> None:
+        logger.info(f"Launching publishers for a {EVALUATION_TIME_LIMIT} seconds test...")
+        await asyncio.gather(
+            start_publisher("1", global_stats),
+            start_publisher("2", global_stats)
+        )
+        
+        print("\n" + "="*50)
+        print("--- PUBLISHER EVALUATION FINISHED ---")
+        print(f"Total Publications Emitted in 3 minutes: {global_stats['total_emitted']}")
+        print("="*50 + "\n")
 
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nPublisher stream stopped by user.")
+        print("\nPublisher stream stopped manually.")
