@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+message PublicationMessage {
+    string company = 1;
+    double value = 2;
+    double drop = 3;
+    double variation = 4;
+    string date = 5;
+    double timestamp = 6;
+}

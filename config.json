@@ -8,5 +8,6 @@
     "drop": 0.60,
     "date": 0.40
   },
-  "default_equality_weight": 0.25
+  "default_equality_weight": 0.70,
+  "serialization": "json" 
 }

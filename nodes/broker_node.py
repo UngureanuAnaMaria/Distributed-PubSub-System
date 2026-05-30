@@ -11,6 +11,7 @@ from models.matching_engine import MatchingEngine
 from models.publication import Publication
 from models.subscription import Subscription
 from models.load_config import load_config
+from models import publication_pb2
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s [%(levelname)s] (%(name)s): %(message)s',
@@ -18,6 +19,7 @@ logging.basicConfig(level=logging.INFO,
 
 config = load_config()
 BROKER_PORTS = config["broker_ports"]
+SERIALIZATION_MODE = config.get("serialization", "json").lower()
 
 
 class BrokerNode:
@@ -26,7 +28,6 @@ class BrokerNode:
         self.port = port
         self.logger = logging.getLogger(f"Broker-{broker_id}")
 
-        # Baza locala din RAM a brokerului: writer -> lista de subscriptii
         self.subscriptions: Dict[asyncio.StreamWriter, List[Subscription]] = {}
 
     async def start(self) -> None:
@@ -36,7 +37,6 @@ class BrokerNode:
             await server.serve_forever()
 
     async def forward_to_peers(self, fields: dict, timestamp: float) -> None:
-        """Redirecționează publicația primită de la publisher către ceilalți brokeri din rețea."""
         forward_message = {
             "type": "PUBLISH",
             "fields": fields,
@@ -49,71 +49,93 @@ class BrokerNode:
             if peer_port == self.port:
                 continue
             try:
-                # Conectare dinamică, trimitere pachet și închidere conexiune (similara cu publisher-ul)
                 _, writer = await asyncio.open_connection('localhost', peer_port)
                 writer.write(packet.encode('utf-8'))
                 await writer.drain()
                 writer.close()
                 await writer.wait_closed()
-                self.logger.info(f"-> [FORWARD] Publication routed to peer broker on port [{peer_port}]")
-            except Exception as e:
-                self.logger.warning(f"Could not forward to peer broker on port [{peer_port}]: {e}")
+            except Exception:
+                pass
+
+    async def process_matching(self, publication: Publication, is_forwarded: bool) -> None:
+        for client_writer, subscriptions in list(self.subscriptions.items()):
+            for subscription in subscriptions:
+                if MatchingEngine.is_match(publication, subscription):
+                    try:
+                        notification = json.dumps({
+                            "type": "NOTIFICATION",
+                            "publication": publication.to_dict()
+                        }) + "\n"
+                        client_writer.write(notification.encode('utf-8'))
+                        await client_writer.drain()
+                    except Exception as e:
+                        if client_writer in self.subscriptions:
+                            del self.subscriptions[client_writer]
+
+        if not is_forwarded:
+            asyncio.create_task(self.forward_to_peers(publication.fields, publication.timestamp))
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer_name = writer.get_extra_info('peername')
-        self.logger.info(f"New connection established from: {peer_name}")
 
         while True:
             try:
-                # CITIM LINIE CU LINIE IN LOC DE BUCATI DE 4096 BYTES
-                data = await reader.readline()
-                if not data:
-                    self.logger.info(f"Connection with client {peer_name} was closed.")
+                # Citim fix primul byte pentru a detecta formatul (Framing)
+                first_byte_chunk = await reader.read(1)
+                if not first_byte_chunk:
                     break
 
-                packet = data.decode('utf-8').strip()
-                if not packet:
+                if first_byte_chunk == b'\n':
                     continue
 
-                message = json.loads(packet)
-
-                if message.get("type") == "SUBSCRIBE":
+                # Dacă primul byte este '{' (cod ASCII 123), este JSON
+                if first_byte_chunk[0] == 123:
+                    rest_of_line = await reader.readline()
+                    packet = (first_byte_chunk + rest_of_line).decode('utf-8').strip()
+                    if not packet:
+                        continue
+                        
+                    message = json.loads(packet)
+                    
+                    if message.get("type") == "SUBSCRIBE":
                         subscription = Subscription(message["subscriber_id"], message["filters"])
                         if writer not in self.subscriptions:
                             self.subscriptions[writer] = []
                         self.subscriptions[writer].append(subscription)
-                        self.logger.info(f"Subscription STORED for subscriber {message['subscriber_id']}")
-                    
-                elif message.get("type") == "PUBLISH":
+                        
+                    elif message.get("type") == "PUBLISH":
                         publication = Publication(message["fields"], message["timestamp"])
                         is_forwarded = message.get("forwarded", False)
-                        
                         log_prefix = "[FORWARDED] " if is_forwarded else ""
-                        self.logger.info(f"{log_prefix}Publication received. Payload: {json.dumps(publication.fields)}")
+                        self.logger.info(f"{log_prefix}Publication received (JSON). Payload: {json.dumps(publication.fields)}")
+                        await self.process_matching(publication, is_forwarded=is_forwarded)
 
-                        # 1. Matching local și notificare pentru subscriberii conectați direct la acest broker
-                        for client_writer, subscriptions in list(self.subscriptions.items()):
-                            for subscription in subscriptions:
-                                if MatchingEngine.is_match(publication, subscription):
-                                    try:
-                                        notification = json.dumps({
-                                            "type": "NOTIFICATION",
-                                            "publication": publication.to_dict()
-                                        }) + "\n"
-                                        client_writer.write(notification.encode('utf-8'))
-                                        await client_writer.drain()
-                                        self.logger.info(
-                                            f"-> [MATCH] Notification pushed successfully to {subscription.subscriber_id}")
-                                    except Exception as e:
-                                        self.logger.error(f"Failed to send notification to client: {e}")
-                                        if client_writer in self.subscriptions:
-                                            del self.subscriptions[client_writer]
+                else:
+                    # Dacă nu este '{', atunci este un pachet binar (Protobuf)
+                    # Citim restul de 3 bytes din prefixul de lungime (am citit deja 1 byte sus)
+                    rest_of_length = await reader.readexactly(3)
+                    msg_length = int.from_bytes(first_byte_chunk + rest_of_length, 'big')
 
-                        # 2. Dacă publicația vine direct de la un Publisher (nu este deja forward-ată), o trimitem peer-ilor
-                        if not is_forwarded:
-                            # Folosim asyncio.create_task pentru a nu bloca fluxul principal al clientului curent
-                            asyncio.create_task(self.forward_to_peers(publication.fields, publication.timestamp))
+                    # Citim fix atâția bytes câți ne-a indicat prefixul
+                    binary_data = await reader.readexactly(msg_length)
 
+                    pb_msg = publication_pb2.PublicationMessage()
+                    pb_msg.ParseFromString(binary_data)
+
+                    fields = {
+                        "company": pb_msg.company,
+                        "value": round(pb_msg.value, 2),
+                        "drop": round(pb_msg.drop, 2),
+                        "variation": round(pb_msg.variation, 4),
+                        "date": pb_msg.date
+                    }
+                    publication = Publication(fields=fields, timestamp=pb_msg.timestamp)
+                    
+                    self.logger.info(f"Publication received (PROTOBUF). Payload: {json.dumps(publication.fields)}")
+                    await self.process_matching(publication, is_forwarded=False)
+
+            except asyncio.IncompleteReadError:
+                break
             except Exception as e:
                 self.logger.error(f"Error handling traffic for {peer_name}: {e}")
                 break
@@ -125,7 +147,6 @@ class BrokerNode:
             await writer.wait_closed()
         except Exception:
             pass
-        self.logger.info(f"Connection closed for: {peer_name}")
 
 
 if __name__ == "__main__":
