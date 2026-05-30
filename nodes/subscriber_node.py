@@ -24,63 +24,76 @@ SUBSCRIPTION_WEIGHTS = config["subscription_weights"]
 DEFAULT_EQUALITY_WEIGHT = config["default_equality_weight"]
 
 # --- EVALUATION CONFIG ---
-EVALUATION_TIME_LIMIT = 30.0  # 3 minute
+EVALUATION_TIME_LIMIT = 30.0  
 TOTAL_SUBSCRIPTIONS = 10000
 
 
-async def start_distributed_subscriber(subscriber_id: str, subscriptions: List[Subscription], stats: dict) -> None:
-    logger_node = logging.getLogger(f"Subscriber-{subscriber_id}")
-    logger_node.info(f"Node {subscriber_id} routing {len(subscriptions)} filters...")
+async def resilient_worker(subscriber_id: str, subscriptions: List[Subscription], initial_port: int, stats: dict, start_time: float) -> None:
+    """Un task care menține o listă de filtre activă în rețea. Dacă brokerul cade, se mută pe altul."""
+    logger_node = logging.getLogger(f"Sub-{subscriber_id}-Worker")
+    current_port = initial_port
 
-    connections = {}
-    for port in BROKER_PORTS:
+    while time.time() - start_time < EVALUATION_TIME_LIMIT:
         try:
-            reader, writer = await asyncio.open_connection('localhost', port)
-            connections[port] = (reader, writer)
-        except Exception as e:
-            logger_node.error(f"Failed to connect to Broker [{port}]: {e}")
-
-    # Routing
-    for index, subscription in enumerate(subscriptions):
-        target_port = BROKER_PORTS[index % len(BROKER_PORTS)]
-        if target_port in connections:
-            _, writer = connections[target_port]
-            packet = json.dumps({
-                "type": "SUBSCRIBE",
-                "subscriber_id": subscriber_id,
-                "filters": subscription.filters
-            }) + "\n"
-            writer.write(packet.encode('utf-8'))
+            reader, writer = await asyncio.open_connection('localhost', current_port)
+            
+            # 1. Ne (re)abonăm. Trimitem filtrele acestui worker către brokerul curent.
+            for sub in subscriptions:
+                packet = json.dumps({
+                    "type": "SUBSCRIBE",
+                    "subscriber_id": subscriber_id,
+                    "filters": sub.filters
+                }) + "\n"
+                writer.write(packet.encode('utf-8'))
             await writer.drain()
+            logger_node.info(f"Assigned {len(subscriptions)} filters to Broker [{current_port}]")
 
-    logger_node.info(f"Node {subscriber_id} ready. Listening for matches for {EVALUATION_TIME_LIMIT}s...")
-    start_time = time.time()
-
-    async def listen_to_broker(port: int, reader: asyncio.StreamReader):
-        while time.time() - start_time < EVALUATION_TIME_LIMIT:
-            try:
-                # FOLOSIM readline() IN LOC DE read(4096)
-                data = await asyncio.wait_for(reader.readline(), timeout=1.0)
-                if not data:
-                    break
-                
-                packet = data.decode('utf-8').strip()
-                if not packet:
-                    continue
+            # 2. Ascultăm notificări
+            while time.time() - start_time < EVALUATION_TIME_LIMIT:
+                try:
+                    data = await asyncio.wait_for(reader.readline(), timeout=1.0)
+                    if not data:
+                        # Brokerul a închis conexiunea brusc (CRASH!)
+                        logger_node.warning(f"Connection lost with Broker [{current_port}]! Broker might be DOWN.")
+                        break # Ieșim din bucla de ascultare pentru a declanșa reconectarea
                     
-                message = json.loads(packet)
-                if message.get("type") == "NOTIFICATION":
-                    latency = time.time() - message["publication"]["timestamp"]
-                    stats['latencies'].append(latency)
-                    stats['matches'] += 1
+                    packet = data.decode('utf-8').strip()
+                    if not packet:
+                        continue
                         
-            except asyncio.TimeoutError:
-                continue
-            except Exception as e:
-                logger_node.error(f"Listening error on [{port}]: {e}")
-                break
-    listen_tasks = [listen_to_broker(port, reader) for port, (reader, _) in connections.items()]
-    await asyncio.gather(*listen_tasks)
+                    message = json.loads(packet)
+                    if message.get("type") == "NOTIFICATION":
+                        latency = time.time() - message["publication"]["timestamp"]
+                        stats['latencies'].append(latency)
+                        stats['matches'] += 1
+                            
+                except asyncio.TimeoutError:
+                    continue # E normal la 1 secunda, verificam din nou timpul
+
+        except Exception as e:
+            logger_node.error(f"Cannot connect to Broker [{current_port}].")
+
+        # 3. LOGICA DE FALLBACK: Dacă am ajuns aici, conexiunea a picat. 
+        # Alegem alt port care NU este portul curent picat și reîncercăm!
+        available_ports = [p for p in BROKER_PORTS if p != current_port]
+        current_port = random.choice(available_ports)
+        logger_node.info(f"Relocating filters to alternative Broker [{current_port}]...")
+        
+        await asyncio.sleep(2.0) # Așteptăm puțin înainte de a bombarda rețeaua cu o nouă conexiune
+
+
+async def start_distributed_subscriber(subscriber_id: str, subscriptions: List[Subscription], stats: dict, start_time: float) -> None:
+    # Împărțim filtrele acestui subscriber în mod egal pe numărul de brokeri disponibili
+    chunks = [subscriptions[i::len(BROKER_PORTS)] for i in range(len(BROKER_PORTS))]
+    
+    workers = []
+    for idx, chunk in enumerate(chunks):
+        if chunk:
+            target_port = BROKER_PORTS[idx]
+            # Lansăm câte un worker independent pentru fiecare bucată de filtre
+            workers.append(resilient_worker(subscriber_id, chunk, target_port, stats, start_time))
+            
+    await asyncio.gather(*workers)
 
 
 if __name__ == "__main__":
@@ -94,12 +107,13 @@ if __name__ == "__main__":
 
         global_stats = {'matches': 0, 'latencies': []}
         chunk_size = TOTAL_SUBSCRIPTIONS // 3
+        start_time = time.time()
 
         logger.info("Launching evaluation. Please start the Publishers now!")
         await asyncio.gather(
-            start_distributed_subscriber("0", generated_subscriptions[0:chunk_size], global_stats),
-            start_distributed_subscriber("1", generated_subscriptions[chunk_size:2*chunk_size], global_stats),
-            start_distributed_subscriber("2", generated_subscriptions[2*chunk_size:], global_stats)
+            start_distributed_subscriber("0", generated_subscriptions[0:chunk_size], global_stats, start_time),
+            start_distributed_subscriber("1", generated_subscriptions[chunk_size:2*chunk_size], global_stats, start_time),
+            start_distributed_subscriber("2", generated_subscriptions[2*chunk_size:], global_stats, start_time)
         )
 
         avg_latency = sum(global_stats['latencies']) / len(global_stats['latencies']) if global_stats['latencies'] else 0
