@@ -6,6 +6,8 @@ import asyncio
 import time
 import os
 
+from models.crypto_utils import CryptoUtils
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.load_config import load_config
@@ -39,6 +41,15 @@ async def start_publisher(publisher_id: str, stats: dict) -> None:
             _, writer = await asyncio.wait_for(connect_task, timeout=3.0)
 
             publication = Publication()
+
+            encrypted_fields = {
+                "company": CryptoUtils.encrypt_string(publication.fields["company"]),
+                "value": CryptoUtils.encrypt_number(publication.fields["value"]),
+                "drop": CryptoUtils.encrypt_number(publication.fields["drop"]),
+                "variation": CryptoUtils.encrypt_number(publication.fields["variation"]),
+                "date": CryptoUtils.encrypt_date(publication.fields["date"])
+            }
+            publication.fields = encrypted_fields
 
             if SERIALIZATION_MODE == "protobuf":
                 # --- RUTARE PROTOBUF (Binar) ---

@@ -122,11 +122,20 @@ class BrokerNode:
                     pb_msg = publication_pb2.PublicationMessage()
                     pb_msg.ParseFromString(binary_data)
 
-                    fields = {
+                    """fields = {
                         "company": pb_msg.company,
                         "value": round(pb_msg.value, 2),
                         "drop": round(pb_msg.drop, 2),
                         "variation": round(pb_msg.variation, 4),
+                        "date": pb_msg.date
+                    }"""
+
+                    # NU MAI ROTUNJIM AICI PENTRU A PREZERVA PRECIZIA CRIPTOGRAFICĂ
+                    fields = {
+                        "company": pb_msg.company,
+                        "value": pb_msg.value,
+                        "drop": pb_msg.drop,
+                        "variation": pb_msg.variation,
                         "date": pb_msg.date
                     }
                     publication = Publication(fields=fields, timestamp=pb_msg.timestamp)

@@ -7,7 +7,10 @@ import time
 import os
 from typing import List
 
+from models.crypto_utils import CryptoUtils
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 
 from models.load_config import load_config
 from models.subscription import Subscription
@@ -38,7 +41,7 @@ async def resilient_worker(subscriber_id: str, subscriptions: List[Subscription]
             reader, writer = await asyncio.open_connection('localhost', current_port)
             
             # 1. Ne (re)abonăm. Trimitem filtrele acestui worker către brokerul curent.
-            for sub in subscriptions:
+            """for sub in subscriptions:
                 packet = json.dumps({
                     "type": "SUBSCRIBE",
                     "subscriber_id": subscriber_id,
@@ -47,7 +50,31 @@ async def resilient_worker(subscriber_id: str, subscriptions: List[Subscription]
                 writer.write(packet.encode('utf-8'))
             await writer.drain()
             logger_node.info(f"Assigned {len(subscriptions)} filters to Broker [{current_port}]")
+"""
 
+            for sub in subscriptions:
+                encrypted_filters = []
+                for field_name, op, val in sub.filters:
+                    if field_name == "company":
+                        enc_val = CryptoUtils.encrypt_string(val)
+                    elif field_name == "date":
+                        enc_val = CryptoUtils.encrypt_date(val)
+                    else:
+                        enc_val = CryptoUtils.encrypt_number(val)
+                    encrypted_filters.append([field_name, op, enc_val])
+
+                # Împachetăm cu filtrele criptate, nu cu cele originale
+                packet = json.dumps({
+                    "type": "SUBSCRIBE",
+                    "subscriber_id": subscriber_id,
+                    "filters": encrypted_filters
+                }) + "\n"
+                writer.write(packet.encode('utf-8'))
+                
+            await writer.drain()
+            logger_node.info(f"Assigned {len(subscriptions)} ENCRYPTED filters to Broker [{current_port}]")
+
+            
             # 2. Ascultăm notificări
             while time.time() - start_time < EVALUATION_TIME_LIMIT:
                 try:

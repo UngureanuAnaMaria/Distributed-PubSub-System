@@ -19,7 +19,7 @@ class MatchingEngine:
 
             pub_val = publication.fields[field_name]
 
-            if field_name == "date":
+            """if field_name == "date":
                 try:
                     v1 = datetime.strptime(pub_val, "%d.%m.%Y").date()
                     v2 = datetime.strptime(sub_val, "%d.%m.%Y").date()
@@ -28,7 +28,10 @@ class MatchingEngine:
                     return False
             else:
                 v1 = pub_val
-                v2 = sub_val
+                v2 = sub_val"""
+
+            v1 = pub_val
+            v2 = sub_val
 
             if op == "==":
                 if not (v1 == v2): return False
