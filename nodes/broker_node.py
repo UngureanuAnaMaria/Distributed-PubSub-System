@@ -33,7 +33,7 @@ class BrokerNode:
     async def start(self) -> None:
         server = await asyncio.start_server(self.handle_client, 'localhost', self.port)
         self.logger.info(f"Broker node {self.broker_id} is ONLINE and listening on port {self.port}...")
-        async with server:
+        async with server: # in caz de oprire fortata
             await server.serve_forever()
 
     async def forward_to_peers(self, fields: dict, timestamp: float) -> None:
@@ -76,16 +76,16 @@ class BrokerNode:
             asyncio.create_task(self.forward_to_peers(publication.fields, publication.timestamp))
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        peer_name = writer.get_extra_info('peername')
+        peer_name = writer.get_extra_info('peername') # ia ip ul si portul clientului pentru mesajul de eroare 
 
         while True:
             try:
                 # Citim fix primul byte pentru a detecta formatul (Framing)
                 first_byte_chunk = await reader.read(1)
-                if not first_byte_chunk:
+                if not first_byte_chunk: #coneziunea a fost inchisa / eond of file
                     break
 
-                if first_byte_chunk == b'\n':
+                if first_byte_chunk == b'\n': #
                     continue
 
                 # Dacă primul byte este '{' (cod ASCII 123), este JSON
@@ -121,14 +121,6 @@ class BrokerNode:
 
                     pb_msg = publication_pb2.PublicationMessage()
                     pb_msg.ParseFromString(binary_data)
-
-                    """fields = {
-                        "company": pb_msg.company,
-                        "value": round(pb_msg.value, 2),
-                        "drop": round(pb_msg.drop, 2),
-                        "variation": round(pb_msg.variation, 4),
-                        "date": pb_msg.date
-                    }"""
 
                     # NU MAI ROTUNJIM AICI PENTRU A PREZERVA PRECIZIA CRIPTOGRAFICĂ
                     fields = {

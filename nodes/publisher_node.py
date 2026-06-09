@@ -37,7 +37,9 @@ async def start_publisher(publisher_id: str, stats: dict) -> None:
     while time.time() - start_time < EVALUATION_TIME_LIMIT:
         chosen_port = random.choice(BROKER_PORTS)
         try:
+            # pregateste conezxiunea
             connect_task = asyncio.open_connection('localhost', chosen_port)
+            # executa conexiunea cu timeout daca esueaza atunci exception TimeoutError
             _, writer = await asyncio.wait_for(connect_task, timeout=3.0)
 
             publication = Publication()

@@ -21,5 +21,8 @@ class CryptoUtils:
     def encrypt_date(date_str: str) -> str:
         """Transformă data în timestamp criptat și o formatează ca string fix pentru comparare OPE."""
         timestamp = datetime.strptime(date_str, "%d.%m.%Y").timestamp()
+        # timestamp() transforma data in seacunde (de la epotch)
         val = float(timestamp) * SECRET_MULT + SECRET_OFFSET
         return f"{val:020.4f}" # Padding garantat pt evaluari corecte de < sau > pe string-uri
+        # tranforma din "90" comparat cu "100" care ar duce la "90" > "100"
+        # in "000000000000090.0000" comparat cu "000000000000100.00000" care duce corect

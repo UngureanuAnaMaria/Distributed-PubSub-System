@@ -74,7 +74,7 @@ async def resilient_worker(subscriber_id: str, subscriptions: List[Subscription]
             await writer.drain()
             logger_node.info(f"Assigned {len(subscriptions)} ENCRYPTED filters to Broker [{current_port}]")
 
-            
+
             # 2. Ascultăm notificări
             while time.time() - start_time < EVALUATION_TIME_LIMIT:
                 try:
@@ -84,18 +84,18 @@ async def resilient_worker(subscriber_id: str, subscriptions: List[Subscription]
                         logger_node.warning(f"Connection lost with Broker [{current_port}]! Broker might be DOWN.")
                         break # Ieșim din bucla de ascultare pentru a declanșa reconectarea
                     
-                    packet = data.decode('utf-8').strip()
+                    packet = data.decode('utf-8').strip() # transforma din bytes in string
                     if not packet:
                         continue
                         
                     message = json.loads(packet)
-                    if message.get("type") == "NOTIFICATION":
-                        latency = time.time() - message["publication"]["timestamp"]
+                    if message.get("type") == "NOTIFICATION": # Am primit o notoficare valida 
+                        latency = time.time() - message["publication"]["timestamp"] # Latenta
                         stats['latencies'].append(latency)
                         stats['matches'] += 1
                             
                 except asyncio.TimeoutError:
-                    continue # E normal la 1 secunda, verificam din nou timpul
+                    continue 
 
         except Exception as e:
             logger_node.error(f"Cannot connect to Broker [{current_port}].")
