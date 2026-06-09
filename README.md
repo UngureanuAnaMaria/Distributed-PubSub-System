@@ -47,3 +47,21 @@ Pentru a garanta confidentialitatea datelor in tranzit si pe servere, Brokerii r
 * O publicatie sau o inregistrare de tip filtru este criptata de emitent inainte de a ajunge la middleware, iar Brokerii nu detin chei de decriptare.
 * **Egalitati (String-uri):** Numele companiilor sunt criptate folosind Deterministic Hashing (ex. SHA-256). Astfel, Brokerul compara direct amprentele hash (`Hash(pub_val) == Hash(sub_val)`) fara a sti vreodata numele real al companiei.
 * **Inegalitati (Numere/Date):** Deoarece operatorii de inegalitate (`<, >, <=, >=`) sunt esentiali in domeniul bursier, s-a utilizat un algoritm de tip Order-Preserving Encryption (OPE). Valorile numerice si datele calendaristice sunt trecute printr-o functie de criptare monotona (ex. o ecuatie liniara constanta). Aceasta mascheaza valoarea exacta in timpul tranzitului, dar conserva ordinea si ierarhia matematica, permitand motorului static de matching sa aplice inegalitati corecte si precise, respectand regulile criptografice.
+
+## Rezultate si Evaluare Performanta (Cazul de Testare: 3 Minute)
+
+Pentru a demonstra capabilitatile motorului de rutare si impactul operatorilor de evaluare asupra retelei, s-au efectuat trei teste de stres de cate 3 minute. 
+
+Parametrul variabil a fost **Equality Weight** (ponderea operatorului strict de egalitate `==` fortata pe campul `value`). Restul filtrelor au folosit operatori de inegalitate (`<, >, <=, >=`) rezolvati prin criptare OPE. Datele au fost inregistrate cu 10.000 de subcriptii incarcate in memorie.
+
+| Ponderea Egalitatii pe `value` | Subscriptii Active | Publicatii Emise | Total Notificari (Matches) | Latenta Medie (secunde) |
+| :---: | :---: | :---: | :---: | :---: |
+| **100.0%** | 10,000 | 238 | **43,642** | 0.027707 s |
+| **70.0%** | 10,000 | 240 | **72,198** | 0.021810 s |
+| **25.0%** | 10,000 | 238 | **108,778** | 0.042002 s |
+
+**Analiza rezultatelor:**
+Datele demonstreaza clar un fenomen arhitectural specific sistemelor Publish-Subscribe bazate pe continut: relatia invers proportionala intre restrictia filtrelor si volumul de notificari generate.
+* Cand sistemul a fost fortat sa foloseasca 100% operatori de egalitate (`==`) pe campul pretului, filtrele au devenit extrem de restrictive, rezultand intr-un numar minim de potriviri (43.642).
+* Pe masura ce ponderea egalitatii a scazut la 25% (lasand restul de 75% in seama inegalitatilor matematice), "plasa" de filtrare s-a largit considerabil, numarul de potriviri si notificari crescand de peste 2.5 ori (108.778 matches la acelasi numar de publicatii emise).
+* Latenta de livrare s-a mentinut la o medie excelenta (sub 50 de milisecunde), dovedind scalabilitatea motorului stateless de matching si eficienta conexiunilor persistente de retea, chiar si sub o incarcare de peste 100.000 de pachete rutate in 3 minute.

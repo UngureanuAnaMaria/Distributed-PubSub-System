@@ -27,7 +27,7 @@ SUBSCRIPTION_WEIGHTS = config["subscription_weights"]
 DEFAULT_EQUALITY_WEIGHT = config["default_equality_weight"]
 
 # --- EVALUATION CONFIG ---
-EVALUATION_TIME_LIMIT = 30.0  
+EVALUATION_TIME_LIMIT = 180.0  
 TOTAL_SUBSCRIPTIONS = 10000
 
 

@@ -24,9 +24,12 @@ class SubscriptionGenerator:
                          [False] * (total_count - int(total_count * weights["date"])))
 
         company_present_count = int(total_count * weights["company"])
-        equality_count = int(company_present_count * company_equality_weight)
-        company_operators = ["=="] * equality_count + [random.choice(["!=", "<", ">"])
-                                                       for _ in range(company_present_count - equality_count)]
+        company_operators = ["=="] * company_present_count
+
+        value_present_count = int(total_count * weights["value"])
+        value_equality_count = int(value_present_count * company_equality_weight)
+        value_operators = ["=="] * value_equality_count + [random.choice(["<", ">", "<=", ">="]) 
+                                                           for _ in range(value_present_count - value_equality_count)]
 
         random.shuffle(company_presence)
         random.shuffle(value_presence)
@@ -34,9 +37,11 @@ class SubscriptionGenerator:
         random.shuffle(variation_presence)
         random.shuffle(date_presence)
         random.shuffle(company_operators)
+        random.shuffle(value_operators)
 
         generated_subscriptions: List[Subscription] = []
         company_idx = 0
+        value_idx = 0
 
         for i in range(total_count):
             is_empty = not (company_presence[i] or value_presence[i] or drop_presence[i] or variation_presence[i] or
@@ -91,7 +96,8 @@ class SubscriptionGenerator:
                 instance_filters.append(("company", op, val))
 
             if value_presence[i]:
-                op = random.choice(NUMERIC_OPERATORS)
+                op = value_operators[value_idx]
+                value_idx += 1
                 val = round(random.uniform(10.0, 500.0), 2)
                 instance_filters.append(("value", op, val))
 
@@ -114,3 +120,5 @@ class SubscriptionGenerator:
                                                         filters=instance_filters))
 
         return generated_subscriptions
+
+

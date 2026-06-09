@@ -25,7 +25,7 @@ PUBLISHER_INTERVAL = config["publisher_interval"]
 SERIALIZATION_MODE = config.get("serialization", "json").lower()
 
 # --- EVALUATION CONFIG ---
-EVALUATION_TIME_LIMIT = 30.0  # 3 minute
+EVALUATION_TIME_LIMIT = 180.0  # 3 minute
 
 
 async def start_publisher(publisher_id: str, stats: dict) -> None:
